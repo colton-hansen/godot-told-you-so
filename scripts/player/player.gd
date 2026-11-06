@@ -1,6 +1,9 @@
 extends CharacterBody3D
 
 const BodyState := preload("res://scripts/player/player_body_state.gd")
+const WORLD_BLOCKING_MASK: int = 1 << 0 # layer 1 — walls / map collision
+
+enum SitPhase { NONE, APPROACHING, ENTERING, SEATED, EXITING }
 
 @export var mouse_sensitivity: float = 0.002
 @export var move_speed: float = 4.5
@@ -31,13 +34,23 @@ const BodyState := preload("res://scripts/player/player_body_state.gd")
 @export var crouch_camera_lift: float = 0.25
 @export var crouch_camera_forward: float = 0.14
 @export var crouch_camera_right: float = 0.08
+@export var interact_range: float = 4.0
+@export var sit_stand_gap: float = 0.5
+@export var sit_seat_gap: float = -0.32
+@export var sit_backup_speed: float = 3.3
+@export var sit_turn_deg_per_sec: float = 240.0
+@export var sit_arrive_dist: float = 0.14
+@export var sit_camera_lift: float = 0.32
+@export var sit_anim_speed: float = 1.55
 
 @onready var camera_pivot: Node3D = $CameraPivot
 @onready var camera: Camera3D = $CameraPivot/Camera3D
 @onready var fps_man: Node3D = $FpsMan
 @onready var inventory_ui: InventoryUI = $InventoryUI
+@onready var storage_ui: StorageInventoryUI = $StorageInventoryUI
 @onready var player_inventory: Node = $PlayerInventory
 @onready var crosshair: Control = $Crosshair
+@onready var interact_hint: InteractHint = $InteractHint
 @onready var _collision: CollisionShape3D = $CollisionShape3D
 
 var _pitch: float = 0.0
@@ -52,6 +65,23 @@ var _camera_rest_local: Vector3 = Vector3.ZERO
 var _body_shape: CylinderShape3D = null
 var _body_state = BodyState.new()
 var _sprint_ready_msec: int = 0
+var _aimed_storage_id: StringName = StringName()
+var _aimed_interactable: bool = false
+var _aimed_kind: StringName = StringName()
+var _aimed_seat: MeshInstance3D = null
+var is_sitting: bool = false
+var is_sit_turning: bool = false
+var _sit_phase: int = SitPhase.NONE
+var _sit_yaw: float = 0.0
+var _sit_anchor: Vector3 = Vector3.ZERO
+var _sit_approach: Vector3 = Vector3.ZERO
+var _sit_from: Vector3 = Vector3.ZERO
+var _sit_facing: Vector3 = Vector3.FORWARD
+var _sit_enter_t: float = 0.0
+var _sit_enter_dur: float = 2.2
+var _sit_pose_blend: float = 0.0
+var _open_storage_id: StringName = StringName()
+var _rummaging: bool = false
 
 
 func _ready() -> void:
@@ -62,9 +92,13 @@ func _ready() -> void:
 	inventory_ui.setup(player_inventory.loadout)
 	inventory_ui.closed.connect(_on_inventory_closed)
 	inventory_ui.opened.connect(_on_inventory_opened)
+	if storage_ui != null:
+		storage_ui.closed.connect(_on_storage_closed)
 	_seed_test_items()
 	_prepare_body_shape()
 	_apply_body_height()
+	if fps_man != null and fps_man.has_signal(&"action_finished"):
+		fps_man.action_finished.connect(_on_man_action_finished)
 	set_physics_process(true)
 	set_process(true)
 
@@ -78,10 +112,49 @@ func _seed_test_items() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("toggle_inventory"):
+		if storage_ui != null and storage_ui.is_open:
+			storage_ui.close()
+			get_viewport().set_input_as_handled()
+			return
 		_toggle_inventory()
 		get_viewport().set_input_as_handled()
 		return
+	if event.is_action_pressed("interact"):
+		if storage_ui != null and storage_ui.is_open:
+			storage_ui.close()
+			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+			_update_crosshair()
+			get_viewport().set_input_as_handled()
+			return
+		if _sit_phase == SitPhase.APPROACHING or _sit_phase == SitPhase.ENTERING or _sit_phase == SitPhase.EXITING:
+			get_viewport().set_input_as_handled()
+			return
+		if _sit_phase == SitPhase.SEATED:
+			_begin_stand_from_sit()
+			get_viewport().set_input_as_handled()
+			return
+		if not inventory_ui.is_open and _aimed_kind == &"sit":
+			_begin_sit()
+			get_viewport().set_input_as_handled()
+			return
+		if not inventory_ui.is_open and _aimed_interactable and _open_storage(_aimed_storage_id):
+			get_viewport().set_input_as_handled()
+		return
 	if _is_locked():
+		return
+	if _sit_phase != SitPhase.NONE:
+		if (
+			_sit_phase != SitPhase.APPROACHING
+			and event is InputEventMouseMotion
+			and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
+		):
+			camera_pivot.rotate_y(-event.relative.x * mouse_sensitivity)
+			_pitch -= event.relative.y * mouse_sensitivity
+			_apply_pitch()
+		if event.is_action_pressed("jump"):
+			if _sit_phase == SitPhase.SEATED:
+				_begin_stand_from_sit()
+			get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("crouch"):
 		_toggle_stance()
@@ -95,6 +168,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		_pitch -= event.relative.y * mouse_sensitivity
 		_apply_pitch()
 	if event.is_action_pressed("ui_cancel"):
+		if storage_ui != null and storage_ui.is_open:
+			storage_ui.close()
+			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+			_update_crosshair()
+			get_viewport().set_input_as_handled()
+			return
 		var captured := Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE if captured else Input.MOUSE_MODE_CAPTURED)
 		_update_crosshair()
@@ -108,6 +187,14 @@ func _physics_process(delta: float) -> void:
 		velocity.y -= gravity_value * delta
 	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var locked: bool = _is_locked()
+	if _sit_phase == SitPhase.APPROACHING:
+		_tick_sit_approach(delta)
+		_apply_body_height()
+		move_and_slide()
+		return
+	if _sit_phase != SitPhase.NONE:
+		_tick_sitting(input_dir)
+		return
 	if not locked:
 		_stand_for_sprint(input_dir)
 	_blend_stance_pose(delta)
@@ -138,10 +225,15 @@ func _physics_process(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	_update_camera_rig(delta)
+	if _sit_phase == SitPhase.APPROACHING:
+		_apply_body_look_yaw(_sit_yaw)
+	_update_interact_aim()
 	_update_crosshair()
 	if not inventory_ui.is_open:
 		_ensure_yaw_only_on_camera_pivot()
 		_apply_pitch()
+		if _sit_phase == SitPhase.APPROACHING:
+			_apply_body_look_yaw(_sit_yaw)
 
 
 func _update_camera_rig(delta: float) -> void:
@@ -168,7 +260,7 @@ func _update_camera_rig(delta: float) -> void:
 			head_eye_height_from_feet,
 			head_bob_scale,
 		)
-		head_pos.y += crouch_camera_lift * _crouch
+		head_pos.y += crouch_camera_lift * _crouch + sit_camera_lift * _sit_pose_blend
 		if head_pos.length_squared() > 0.0001:
 			var blend := clampf(head_anchor_blend_speed * delta, 0.0, 1.0)
 			if not _head_anchor_active:
@@ -179,7 +271,11 @@ func _update_camera_rig(delta: float) -> void:
 			return
 	_head_anchor_active = false
 	var rest := _camera_pivot_rest
-	rest.y = lerpf(head_eye_height_from_feet, crouch_eye_height, _crouch) + crouch_camera_lift * _crouch
+	rest.y = (
+		lerpf(head_eye_height_from_feet, crouch_eye_height, _crouch)
+		+ crouch_camera_lift * _crouch
+		+ sit_camera_lift * _sit_pose_blend
+	)
 	camera_pivot.position = rest
 
 
@@ -201,7 +297,357 @@ func _wish_from_input(input_dir: Vector2, sprinting: bool) -> Vector3:
 
 
 func _is_locked() -> bool:
+	if storage_ui != null and storage_ui.is_open:
+		return true
 	return inventory_ui.is_open
+
+
+func _interact_raycast() -> Dictionary:
+	if camera == null:
+		return {}
+	var w := get_world_3d()
+	if w == null:
+		return {}
+	var origin := camera.global_position
+	var dir := (-camera.global_transform.basis.z).normalized()
+
+	# Ближайший треугольник видимого меша, не AABB-зона (шкаф больше не «перекрывает» микроволновку).
+	var best_d := interact_range
+	var best: Dictionary = {}
+	for node: Node in get_tree().get_nodes_in_group(&"interactable_mesh"):
+		var mi := node as MeshInstance3D
+		if mi == null:
+			continue
+		var kind := _interact_kind_of(mi)
+		if kind == StringName():
+			continue
+		var hit: Dictionary = _closest_triangle_hit(mi, origin, dir, best_d)
+		if bool(hit.get("ok", false)) and float(hit.dist) < best_d:
+			best_d = float(hit.dist)
+			best = {
+				"kind": kind,
+				"id": mi.get_meta(&"storage_id", StringName()) as StringName,
+				"mesh": mi,
+				"point": hit.point as Vector3,
+			}
+	if best.is_empty():
+		return {}
+	if not _has_clear_los_to(origin, best.point as Vector3, w):
+		return {}
+	return best
+
+
+func _interact_kind_of(mi: MeshInstance3D) -> StringName:
+	if mi.has_meta(&"interact_kind"):
+		return mi.get_meta(&"interact_kind") as StringName
+	if mi.has_meta(&"storage_id"):
+		return &"storage"
+	return StringName()
+
+
+func _closest_triangle_hit(mi: MeshInstance3D, origin: Vector3, dir: Vector3, max_d: float) -> Dictionary:
+	var faces: PackedVector3Array
+	if mi.has_meta(&"interact_faces"):
+		faces = mi.get_meta(&"interact_faces") as PackedVector3Array
+	else:
+		var mesh: Mesh = mi.mesh
+		if mesh == null:
+			return {"ok": false}
+		faces = mesh.get_faces()
+		mi.set_meta(&"interact_faces", faces)
+	if faces.size() < 3:
+		return {"ok": false}
+	var xf := mi.global_transform
+	var inv := xf.affine_inverse()
+	var local_o: Vector3 = inv * origin
+	var local_d: Vector3 = inv.basis * dir
+	if local_d.length_squared() < 1e-12:
+		return {"ok": false}
+	var best_world := max_d
+	var best_pt := Vector3.ZERO
+	var ok := false
+	var i := 0
+	while i + 2 < faces.size():
+		var p: Variant = Geometry3D.ray_intersects_triangle(
+			local_o, local_d, faces[i], faces[i + 1], faces[i + 2]
+		)
+		if p != null:
+			var world_p: Vector3 = xf * (p as Vector3)
+			var d: float = origin.distance_to(world_p)
+			if d > 0.002 and d < best_world:
+				best_world = d
+				best_pt = world_p
+				ok = true
+		i += 3
+	if not ok:
+		return {"ok": false}
+	return {"ok": true, "dist": best_world, "point": best_pt}
+
+
+func _has_clear_los_to(origin: Vector3, aim: Vector3, w: World3D) -> bool:
+	var dist: float = origin.distance_to(aim)
+	if dist < 0.02:
+		return true
+	var q_wall := PhysicsRayQueryParameters3D.create(origin, aim)
+	q_wall.collide_with_areas = false
+	q_wall.collide_with_bodies = true
+	q_wall.collision_mask = WORLD_BLOCKING_MASK
+	q_wall.hit_from_inside = true
+	q_wall.exclude = _ray_exclude_rids()
+	var hit_w: Dictionary = w.direct_space_state.intersect_ray(q_wall)
+	if hit_w.is_empty():
+		return true
+	# Склеенная коллизия карты включает те же меши — попадание почти в ту же точку не стена.
+	var dist_wall: float = origin.distance_to(hit_w.position)
+	return dist_wall >= dist - 0.2
+
+
+func _ray_exclude_rids() -> Array[RID]:
+	# exclude ожидает RID физического тела CharacterBody3D
+	return [get_rid()] as Array[RID]
+
+
+func _open_storage(sid: StringName) -> bool:
+	if sid == StringName() or storage_ui == null:
+		return false
+	if inventory_ui.is_open:
+		return false
+	var loadout: PlayerLoadout = KitchenStorages.loadout(sid)
+	if loadout == null:
+		return false
+	storage_ui.open_with(loadout, KitchenStorages.interact_label(sid))
+	_open_storage_id = sid
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	_update_crosshair()
+	_start_rummage()
+	if sid == KitchenStorages.ID_FRIDGE:
+		_set_fridge_open(true)
+	return true
+
+
+func _update_interact_aim() -> void:
+	_aimed_interactable = false
+	_aimed_storage_id = StringName()
+	_aimed_kind = StringName()
+	_aimed_seat = null
+	if interact_hint != null:
+		interact_hint.set_hint("")
+	if _sit_phase == SitPhase.SEATED:
+		if interact_hint != null:
+			interact_hint.set_hint("Встать [E]")
+		return
+	if _sit_phase != SitPhase.NONE:
+		return
+	if _is_locked() or camera == null:
+		return
+	if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
+		return
+	var hit := _interact_raycast()
+	if hit.is_empty():
+		return
+	var kind: StringName = hit.kind as StringName
+	if kind == &"sit":
+		_aimed_kind = &"sit"
+		_aimed_seat = hit.mesh as MeshInstance3D
+		_aimed_interactable = true
+		if interact_hint != null:
+			interact_hint.set_hint("Диван [E]")
+		return
+	var sid: StringName = hit.id as StringName
+	var loadout: PlayerLoadout = KitchenStorages.loadout(sid)
+	if loadout == null:
+		return
+	_aimed_kind = &"storage"
+	_aimed_interactable = true
+	_aimed_storage_id = sid
+	if interact_hint != null:
+		var name_part := KitchenStorages.interact_label(sid)
+		interact_hint.set_hint("%s [E]" % name_part)
+
+
+func _tick_sitting(input_dir: Vector2) -> void:
+	velocity = Vector3.ZERO
+	is_sprinting = false
+	_air_sprint = false
+	if _body_state.wants_crouch():
+		_body_state.enter_stand()
+	is_crouching = false
+	_crouch = 0.0
+	if _sit_phase == SitPhase.ENTERING or _sit_phase == SitPhase.EXITING:
+		_sit_enter_t += get_physics_process_delta_time()
+		var a := clampf(_sit_enter_t / maxf(_sit_enter_dur, 0.05), 0.0, 1.0)
+		a = a * a * (3.0 - 2.0 * a)
+		_sit_pose_blend = a if _sit_phase == SitPhase.ENTERING else 1.0 - a
+		var p := _sit_from.lerp(_sit_anchor, a)
+		p.y = _sit_anchor.y
+		global_position = p
+	elif _sit_phase == SitPhase.SEATED:
+		_sit_pose_blend = 1.0
+		global_position = _sit_anchor
+	else:
+		_sit_pose_blend = 0.0
+	_apply_body_height()
+	if _sit_phase == SitPhase.SEATED and not _is_locked():
+		if input_dir.length() > 0.35 or Input.is_action_just_pressed("jump"):
+			_begin_stand_from_sit()
+
+
+func _tick_sit_approach(delta: float) -> void:
+	is_sprinting = false
+	_air_sprint = false
+	if _body_state.wants_crouch():
+		_body_state.enter_stand()
+	is_crouching = false
+	_crouch = move_toward(_crouch, 0.0, crouch_blend_speed * delta)
+	_sit_pose_blend = 0.0
+	var target_yaw := _yaw_from_dir(_sit_facing)
+	_sit_yaw = rotate_toward(_sit_yaw, target_yaw, deg_to_rad(sit_turn_deg_per_sec) * delta)
+	_apply_body_look_yaw(_sit_yaw)
+	var yaw_err := absf(angle_difference(_sit_yaw, target_yaw))
+	if yaw_err > deg_to_rad(8.0):
+		velocity.x = 0.0
+		velocity.z = 0.0
+		return
+	is_sit_turning = false
+	var to := _sit_approach - global_position
+	to.y = 0.0
+	var dist := to.length()
+	if dist <= sit_arrive_dist:
+		velocity.x = 0.0
+		velocity.z = 0.0
+		_start_sit_down()
+		return
+	var dir := to / dist
+	var speed := sit_backup_speed
+	if dist < 0.4:
+		speed = sit_backup_speed * clampf(dist / 0.4, 0.25, 1.0)
+	velocity.x = dir.x * speed
+	velocity.z = dir.z * speed
+
+
+func _apply_body_look_yaw(yaw: float) -> void:
+	camera_pivot.rotation = Vector3(0.0, yaw, 0.0)
+	if fps_man == null:
+		return
+	var extra := 0.0
+	if fps_man.get("model_yaw_degrees") != null:
+		extra = deg_to_rad(float(fps_man.get("model_yaw_degrees")))
+	var model_pitch := deg_to_rad(crouch_model_pitch_deg) * _crouch
+	fps_man.rotation = Vector3(model_pitch, yaw + extra, 0.0)
+
+
+func _yaw_from_dir(dir: Vector3) -> float:
+	var d := Vector3(dir.x, 0.0, dir.z)
+	if d.length_squared() < 0.0001:
+		return camera_pivot.rotation.y
+	# Camera looks down local -Z; looking_at matches that, atan2(x, -z) was 180° off.
+	return Basis.looking_at(d.normalized(), Vector3.UP).get_euler().y
+
+
+func _begin_sit() -> void:
+	if _aimed_seat == null or _sit_phase != SitPhase.NONE:
+		return
+	if not is_on_floor():
+		return
+	_sit_facing = _seat_facing(_aimed_seat)
+	_sit_approach = _seat_anchor(_aimed_seat, _sit_facing, sit_stand_gap)
+	_sit_anchor = _seat_anchor(_aimed_seat, _sit_facing, sit_seat_gap)
+	_sit_yaw = camera_pivot.rotation.y
+	velocity = Vector3.ZERO
+	_body_state.enter_stand()
+	is_crouching = false
+	is_sitting = false
+	is_sit_turning = true
+	_sit_phase = SitPhase.APPROACHING
+	_apply_body_look_yaw(_sit_yaw)
+
+
+func _start_sit_down() -> void:
+	_sit_from = global_position
+	_sit_from.y = _sit_anchor.y
+	_sit_enter_t = 0.0
+	_sit_enter_dur = 2.2 / sit_anim_speed
+	if fps_man != null and fps_man.has_method("action_length"):
+		var d: float = float(fps_man.call("action_length", &"stand_to_sit"))
+		if d > 0.05:
+			_sit_enter_dur = d / sit_anim_speed
+	_sit_yaw = _yaw_from_dir(_sit_facing)
+	_apply_body_look_yaw(_sit_yaw)
+	is_sitting = true
+	is_sit_turning = false
+	_sit_phase = SitPhase.ENTERING
+	if not bool(fps_man.call("play_action", &"stand_to_sit", 0.12, sit_anim_speed)):
+		if bool(fps_man.call("play_action", &"sit_idle", 0.16)):
+			global_position = _sit_anchor
+			_sit_phase = SitPhase.SEATED
+		else:
+			is_sitting = false
+			_sit_phase = SitPhase.NONE
+
+
+func _begin_stand_from_sit() -> void:
+	if _sit_phase != SitPhase.SEATED:
+		return
+	_sit_phase = SitPhase.EXITING
+	_sit_from = global_position
+	_sit_anchor = _sit_anchor + _sit_facing * 0.28
+	_sit_enter_t = 0.0
+	_sit_enter_dur = 2.2 / sit_anim_speed
+	if fps_man != null and fps_man.has_method("action_length"):
+		var d: float = float(fps_man.call("action_length", &"sit_to_stand"))
+		if d > 0.05:
+			_sit_enter_dur = d / sit_anim_speed
+	if not bool(fps_man.call("play_action", &"sit_to_stand", 0.12, sit_anim_speed)):
+		_finish_stand_from_sit()
+
+
+func _finish_stand_from_sit() -> void:
+	_sit_phase = SitPhase.NONE
+	is_sitting = false
+	is_sit_turning = false
+	_sit_pose_blend = 0.0
+	if fps_man != null and fps_man.has_method("release_action"):
+		fps_man.call("release_action")
+
+
+func _on_man_action_finished(clip: StringName) -> void:
+	if clip == &"stand_to_sit" and _sit_phase == SitPhase.ENTERING:
+		if bool(fps_man.call("play_action", &"sit_idle", 0.18)):
+			_sit_phase = SitPhase.SEATED
+		else:
+			_finish_stand_from_sit()
+		return
+	if clip == &"sit_to_stand" and _sit_phase == SitPhase.EXITING:
+		_finish_stand_from_sit()
+
+
+func _seat_facing(mi: MeshInstance3D) -> Vector3:
+	var mesh: Mesh = mi.mesh
+	if mesh == null:
+		return Vector3.FORWARD
+	var aabb: AABB = mi.global_transform * mesh.get_aabb()
+	var center: Vector3 = aabb.get_center()
+	var to_player := global_position - center
+	to_player.y = 0.0
+	if aabb.size.x <= aabb.size.z:
+		var sx := signf(to_player.x)
+		if is_zero_approx(sx):
+			sx = 1.0
+		return Vector3(sx, 0.0, 0.0)
+	var sz := signf(to_player.z)
+	if is_zero_approx(sz):
+		sz = 1.0
+	return Vector3(0.0, 0.0, sz)
+
+
+func _seat_anchor(mi: MeshInstance3D, facing: Vector3, gap: float) -> Vector3:
+	var mesh: Mesh = mi.mesh
+	if mesh == null:
+		return global_position
+	var aabb: AABB = mi.global_transform * mesh.get_aabb()
+	var center: Vector3 = aabb.get_center()
+	var half := minf(aabb.size.x, aabb.size.z) * 0.5
+	return Vector3(center.x, global_position.y, center.z) + facing * (half + gap)
 
 
 func _toggle_stance() -> void:
@@ -333,12 +779,43 @@ func _on_inventory_closed() -> void:
 	_update_crosshair()
 
 
+func _on_storage_closed() -> void:
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+	_update_crosshair()
+	_stop_rummage()
+	if _open_storage_id == KitchenStorages.ID_FRIDGE:
+		_set_fridge_open(false)
+	_open_storage_id = StringName()
+
+
+func _start_rummage() -> void:
+	if _rummaging or _sit_phase != SitPhase.NONE:
+		return
+	if fps_man == null:
+		return
+	_rummaging = true
+	fps_man.call("play_action", &"while_interacting", 0.14)
+
+
+func _stop_rummage() -> void:
+	if not _rummaging:
+		return
+	_rummaging = false
+	if _sit_phase == SitPhase.NONE and fps_man != null and fps_man.has_method("release_action"):
+		fps_man.call("release_action")
+
+
+func _set_fridge_open(want: bool) -> void:
+	var n := get_tree().get_first_node_in_group(&"fridge_door_ctrl")
+	if n != null and n.has_method("set_open"):
+		n.call("set_open", want)
+
+
 func _update_crosshair() -> void:
 	if crosshair == null:
 		return
-	var should_show: bool = (
-		not inventory_ui.is_open and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
-	)
+	var ui_open := inventory_ui.is_open or (storage_ui != null and storage_ui.is_open)
+	var should_show: bool = not ui_open and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
 	crosshair.visible = should_show
 
 

@@ -14,6 +14,11 @@ const CLIP_SCENES: Dictionary = {
 	&"crouch_b_walk": preload("res://assets/player/animations/crouch-b-walk.fbx"),
 	&"crouch_l_walk": preload("res://assets/player/animations/crouch-l-walk.fbx"),
 	&"crouch_r_walk": preload("res://assets/player/animations/crouch-r-walk.fbx"),
+	&"stand_to_sit": preload("res://assets/player/animations/stand-to-sit.fbx"),
+	&"sit_idle": preload("res://assets/player/animations/sit-idle.fbx"),
+	&"sit_to_stand": preload("res://assets/player/animations/sit-to-stand.fbx"),
+	&"interact": preload("res://assets/player/animations/interact.fbx"),
+	&"while_interacting": preload("res://assets/player/animations/while-interacting.fbx"),
 }
 
 const F_WALK_CYCLE_SEC := 1.16666666666667
@@ -35,6 +40,11 @@ const CLIP_LOOP: Dictionary = {
 	&"crouch_b_walk": Animation.LOOP_LINEAR,
 	&"crouch_l_walk": Animation.LOOP_LINEAR,
 	&"crouch_r_walk": Animation.LOOP_LINEAR,
+	&"stand_to_sit": Animation.LOOP_NONE,
+	&"sit_idle": Animation.LOOP_LINEAR,
+	&"sit_to_stand": Animation.LOOP_NONE,
+	&"interact": Animation.LOOP_NONE,
+	&"while_interacting": Animation.LOOP_LINEAR,
 }
 
 
@@ -140,6 +150,13 @@ static func blend_time(from_clip: StringName, to_clip: StringName) -> float:
 		return 0.34
 	if from_clip == &"f_run" or to_clip == &"f_run":
 		return 0.3
+	if (
+		String(from_clip).contains("sit")
+		or String(to_clip).contains("sit")
+		or from_clip == &"interact"
+		or to_clip == &"interact"
+	):
+		return 0.14
 	return 0.26
 
 

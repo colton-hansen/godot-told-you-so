@@ -16,10 +16,13 @@ const WORLD_RENDER_LAYER: int = 1
 
 @onready var _model_root: Node3D = $ManRig/ManModel
 
+signal action_finished(clip: StringName)
+
 var _body: CharacterBody3D
 var _anim: AnimationPlayer
 var _current: StringName = &""
 var _rest_head_lift: float = NAN
+var _action_lock: bool = false
 
 
 func _ready() -> void:
@@ -51,6 +54,8 @@ func _apply_runtime_layout() -> void:
 		return
 	_anim.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_PHYSICS
 	Locomotion.install_locomotion_library(_anim)
+	if not _anim.animation_finished.is_connected(_on_animation_finished):
+		_anim.animation_finished.connect(_on_animation_finished)
 	_play_locomotion(&"idle", 0.0)
 	set_physics_process(true)
 	set_process(true)
@@ -92,8 +97,44 @@ func _find_camera_bone(sk: Skeleton3D) -> int:
 	return -1
 
 
+func play_action(clip: StringName, blend: float = 0.14, speed: float = 1.0) -> bool:
+	var anim_id := Locomotion.clip_anim_id(clip)
+	if _anim == null or not _anim.has_animation(anim_id):
+		return false
+	_action_lock = true
+	_current = clip
+	_anim.play(anim_id, blend)
+	_anim.speed_scale = speed
+	return true
+
+
+func release_action() -> void:
+	_action_lock = false
+	_current = &""
+
+
+func is_action_locked() -> bool:
+	return _action_lock
+
+
+func action_length(clip: StringName) -> float:
+	var anim_id := Locomotion.clip_anim_id(clip)
+	if _anim == null or not _anim.has_animation(anim_id):
+		return 0.0
+	return _anim.get_animation(anim_id).length
+
+
+func _on_animation_finished(anim_name: StringName) -> void:
+	var short := String(anim_name)
+	if short.begins_with("locomotion/"):
+		short = short.substr("locomotion/".length())
+	action_finished.emit(StringName(short))
+
+
 func _process(_delta: float) -> void:
 	if Engine.is_editor_hint() or _body == null:
+		return
+	if bool(_body.get("is_sitting")) or bool(_body.get("is_sit_turning")):
 		return
 	var pivot := _body.get_node_or_null("CameraPivot") as Node3D
 	if pivot == null:
@@ -107,6 +148,8 @@ func _process(_delta: float) -> void:
 
 func _physics_process(_delta: float) -> void:
 	if Engine.is_editor_hint() or _anim == null or _body == null:
+		return
+	if _action_lock:
 		return
 	var h := Vector2(_body.velocity.x, _body.velocity.z).length()
 	var clip: StringName = Locomotion.pick_locomotion(_body, walk_speed_threshold)

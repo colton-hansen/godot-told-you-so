@@ -4,6 +4,7 @@
 
 ```
 told-you-so/
+├── raw/                           # Входящие черновики (FBX и др.) — агент переносит в assets/ и подключает в сценах
 ├── docs/                          # Дизайн и заметки
 │   ├── design.md
 │   ├── project-structure.md
@@ -13,14 +14,14 @@ told-you-so/
 │   ├── art/                       # 2D UI, иконки, постеры
 │   ├── audio/                     # SFX, музыка, voice
 │   ├── models/                    # FBX/GLTF персонажи, пропсы, роботы
-│   └── textures/                  # Общие текстуры, материалы
+│   └── textures/                  # Общие текстуры; `kitchen_procedural/` — процедурные тайлы кухни/пола (README внутри)
 ├── resources/
 │   ├── items/                     # ItemDefinition (.tres)
 │   ├── traits/                    # Трейты персонажей
 │   ├── raids/                     # Данные локаций вылазок
 │   └── appliances/                # Микроволновка, открывашка, вешалка…
 ├── scenes/
-│   ├── basement/                  # Подвал (быт, сон, зона сбора)
+│   ├── basement/                  # Подвал (быт, сон, зона сбора), напр. basement_hub.tscn
 │   ├── raid/                      # Локации вылазок (home, shop, …)
 │   ├── player/                    # FPS rig, камера
 │   ├── props/                     # Подбираемые предметы, двери, мусорка

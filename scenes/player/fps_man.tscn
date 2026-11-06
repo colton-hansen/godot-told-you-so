@@ -1,0 +1,9 @@
+[gd_scene load_steps=3 format=3 uid="uid://tys_fps_man"]
+
+[ext_resource type="Script" path="res://scripts/player/fps_man_view.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://tys_player_man_rig" path="res://scenes/player/player_man_rig.tscn" id="2_rig"]
+
+[node name="FpsMan" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="ManRig" parent="." instance=ExtResource("2_rig")]

@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3 uid="uid://tys_player_man_rig"]
+
+[ext_resource type="PackedScene" path="res://assets/player/man.fbx" id="1_man"]
+
+[node name="PlayerManRig" type="Node3D"]
+
+[node name="ManModel" parent="." instance=ExtResource("1_man")]

@@ -1,10 +1,10 @@
 class_name ItemDefinition
 extends Resource
 
-enum Category { MISC, GEAR, CONSUMABLE, MATERIAL, FOOD }
+enum Category { MISC, GEAR, CONSUMABLE, MATERIAL, FOOD, DRINK }
 
 @export var id: StringName = &""
-@export var display_name: String = "Предмет"
+@export var display_name: String = "Item"
 @export var weight_kg: float = 1.0
 @export var max_stack: int = 1
 @export var category: Category = Category.MISC
@@ -13,16 +13,22 @@ enum Category { MISC, GEAR, CONSUMABLE, MATERIAL, FOOD }
 func category_name() -> String:
 	match category:
 		Category.GEAR:
-			return "снаряжение"
+			return "gear"
 		Category.CONSUMABLE:
-			return "расходник"
+			return "consumable"
 		Category.MATERIAL:
-			return "материал"
+			return "material"
 		Category.FOOD:
-			return "еда"
+			return "food"
+		Category.DRINK:
+			return "drink"
 		_:
-			return "разное"
+			return "misc"
 
 
 func is_usable() -> bool:
-	return category == Category.CONSUMABLE or category == Category.FOOD
+	return (
+		category == Category.CONSUMABLE
+		or category == Category.FOOD
+		or category == Category.DRINK
+	)

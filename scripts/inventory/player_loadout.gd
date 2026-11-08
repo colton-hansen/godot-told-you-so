@@ -8,10 +8,11 @@ enum Area { ACTIVE, POCKET, BACKPACK }
 const POCKET_COUNT := InventoryLayout.POCKET_COUNT
 const BACKPACK_COUNT := InventoryLayout.BACKPACK_COUNT
 
-var active: ItemStack = ItemStack.new()
 var pockets: Array[ItemStack] = []
 var backpack: Array[ItemStack] = []
 var backpack_enabled: bool = false
+## Which pocket is in the hero's hand. The hand HUD slot is a view of this pocket.
+var held_pocket: int = 0
 
 ## Points at pocket/backpack slot for yellow frame (item stays in place).
 var favorite_area: Area = Area.POCKET
@@ -31,6 +32,29 @@ func emit_changed() -> void:
 	changed.emit()
 
 
+func held_stack() -> ItemStack:
+	return slot_at(Area.POCKET, held_pocket)
+
+
+func setup_storage(slot_count: int) -> void:
+	backpack_enabled = false
+	favorite_index = -1
+	held_pocket = 0
+	pockets.clear()
+	pockets.resize(slot_count)
+	for i in slot_count:
+		pockets[i] = ItemStack.new()
+
+
+func set_held_pocket(index: int) -> void:
+	if index < 0 or index >= pockets.size():
+		return
+	if held_pocket == index:
+		return
+	held_pocket = index
+	emit_changed()
+
+
 func set_backpack_equipped(equipped: bool) -> void:
 	if backpack_enabled == equipped:
 		return
@@ -43,8 +67,6 @@ func set_backpack_equipped(equipped: bool) -> void:
 
 func total_slots_used() -> int:
 	var n := 0
-	if not active.is_empty():
-		n += 1
 	for s in pockets:
 		if not s.is_empty():
 			n += 1
@@ -58,9 +80,9 @@ func total_slots_used() -> int:
 func slot_at(area: Area, index: int) -> ItemStack:
 	match area:
 		Area.ACTIVE:
-			return active
+			return held_stack()
 		Area.POCKET:
-			if index < 0 or index >= POCKET_COUNT:
+			if index < 0 or index >= pockets.size():
 				return null
 			return pockets[index]
 		Area.BACKPACK:
@@ -99,10 +121,13 @@ func favorite_stack() -> ItemStack:
 func equip_from_slot(from_area: Area, from_index: int) -> void:
 	if from_area == Area.ACTIVE:
 		return
-	var src := slot_at(from_area, from_index)
-	if src == null or src.is_empty():
+	if from_area == Area.POCKET:
+		set_held_pocket(from_index)
 		return
-	swap_slots(from_area, from_index, Area.ACTIVE, 0)
+	var src := slot_at(from_area, from_index)
+	if src == null:
+		return
+	swap_slots(from_area, from_index, Area.POCKET, held_pocket)
 
 
 func extract_slot(area: Area, index: int) -> ItemStack:
@@ -135,26 +160,65 @@ func use_from_slot(area: Area, index: int) -> bool:
 
 
 func swap_slots(a_area: Area, a_index: int, b_area: Area, b_index: int) -> void:
-	if _is_backpack_slot_locked_ref(a_area, a_index) or _is_backpack_slot_locked_ref(b_area, b_index):
-		return
-	var a := slot_at(a_area, a_index)
-	var b := slot_at(b_area, b_index)
-	if a == null or b == null:
-		return
-	var tmp_def := a.definition
-	var tmp_qty := a.quantity
-	a.definition = b.definition
-	a.quantity = b.quantity
-	b.definition = tmp_def
-	b.quantity = tmp_qty
-	_fix_favorite_after_swap(a_area, a_index, b_area, b_index)
-	emit_changed()
+	take_from(self, a_area, a_index, b_area, b_index)
+
+
+func take_from(
+	src: PlayerLoadout,
+	src_area: Area,
+	src_index: int,
+	dst_area: Area,
+	dst_index: int
+) -> bool:
+	if src == null:
+		return false
+	if src == self and src_area == dst_area and src_index == dst_index:
+		return false
+	if _is_backpack_slot_locked_ref(dst_area, dst_index):
+		return false
+	if src._is_backpack_slot_locked_ref(src_area, src_index):
+		return false
+	var a := src.slot_at(src_area, src_index)
+	var b := slot_at(dst_area, dst_index)
+	if a == null or b == null or a.is_empty() or a == b:
+		return false
+	if b.is_empty():
+		b.definition = a.definition
+		b.quantity = a.quantity
+		a.definition = null
+		a.quantity = 0
+		if src.is_favorite(src_area, src_index):
+			src.favorite_index = -1
+	elif b.definition == a.definition:
+		var room: int = b.definition.max_stack - b.quantity
+		if room <= 0:
+			return false
+		var put: int = mini(room, a.quantity)
+		b.quantity += put
+		a.quantity -= put
+		if a.quantity <= 0:
+			a.definition = null
+			a.quantity = 0
+			if src.is_favorite(src_area, src_index):
+				src.favorite_index = -1
+	else:
+		var tmp_def := a.definition
+		var tmp_qty := a.quantity
+		a.definition = b.definition
+		a.quantity = b.quantity
+		b.definition = tmp_def
+		b.quantity = tmp_qty
+		if src == self:
+			_fix_favorite_after_swap(src_area, src_index, dst_area, dst_index)
+	src.emit_changed()
+	if src != self:
+		emit_changed()
+	return true
 
 
 func try_add_item(def: ItemDefinition, qty: int = 1) -> int:
 	var remaining := qty
-	remaining = _fill_stack(active, def, remaining)
-	for i in POCKET_COUNT:
+	for i in pockets.size():
 		if remaining <= 0:
 			break
 		remaining = _fill_stack(pockets[i], def, remaining)

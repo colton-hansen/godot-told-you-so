@@ -34,20 +34,20 @@ enum SitPhase { NONE, APPROACHING, ENTERING, SEATED, EXITING }
 @export var crouch_camera_lift: float = 0.25
 @export var crouch_camera_forward: float = 0.14
 @export var crouch_camera_right: float = 0.08
-@export var interact_range: float = 4.0
+@export var interact_range: float = 2.0
 @export var sit_stand_gap: float = 0.5
 @export var sit_seat_gap: float = -0.32
-@export var sit_backup_speed: float = 3.3
-@export var sit_turn_deg_per_sec: float = 240.0
+@export var sit_backup_speed: float = 4.95
+@export var sit_turn_deg_per_sec: float = 360.0
 @export var sit_arrive_dist: float = 0.14
 @export var sit_camera_lift: float = 0.32
-@export var sit_anim_speed: float = 1.55
+@export var sit_anim_speed: float = 2.325
+@export var sit_yaw_limit_deg: float = 120.0
 
 @onready var camera_pivot: Node3D = $CameraPivot
 @onready var camera: Camera3D = $CameraPivot/Camera3D
 @onready var fps_man: Node3D = $FpsMan
 @onready var inventory_ui: InventoryUI = $InventoryUI
-@onready var storage_ui: StorageInventoryUI = $StorageInventoryUI
 @onready var player_inventory: Node = $PlayerInventory
 @onready var crosshair: Control = $Crosshair
 @onready var interact_hint: InteractHint = $InteractHint
@@ -69,6 +69,9 @@ var _aimed_storage_id: StringName = StringName()
 var _aimed_interactable: bool = false
 var _aimed_kind: StringName = StringName()
 var _aimed_seat: MeshInstance3D = null
+var _aimed_hit_point: Vector3 = Vector3.ZERO
+var _aimed_door: MeshInstance3D = null
+var _aimed_lid: MeshInstance3D = null
 var is_sitting: bool = false
 var is_sit_turning: bool = false
 var _sit_phase: int = SitPhase.NONE
@@ -81,6 +84,8 @@ var _sit_enter_t: float = 0.0
 var _sit_enter_dur: float = 2.2
 var _sit_pose_blend: float = 0.0
 var _open_storage_id: StringName = StringName()
+var _aimed_storage_mesh: MeshInstance3D = null
+var _open_storage_mesh: MeshInstance3D = null
 var _rummaging: bool = false
 
 
@@ -92,8 +97,7 @@ func _ready() -> void:
 	inventory_ui.setup(player_inventory.loadout)
 	inventory_ui.closed.connect(_on_inventory_closed)
 	inventory_ui.opened.connect(_on_inventory_opened)
-	if storage_ui != null:
-		storage_ui.closed.connect(_on_storage_closed)
+	inventory_ui.storage_closed.connect(_on_storage_closed)
 	_seed_test_items()
 	_prepare_body_shape()
 	_apply_body_height()
@@ -106,22 +110,41 @@ func _ready() -> void:
 func _seed_test_items() -> void:
 	var can := preload("res://resources/items/canned_food.tres") as ItemDefinition
 	var bandage := preload("res://resources/items/bandage.tres") as ItemDefinition
+	var water := preload("res://resources/items/water_bottle.tres") as ItemDefinition
 	player_inventory.loadout.try_add_item(can, 2)
 	player_inventory.loadout.try_add_item(bandage, 1)
+	player_inventory.loadout.try_add_item(water, 1)
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and not _is_locked():
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_cycle_hotbar(-1)
+			get_viewport().set_input_as_handled()
+			return
+		if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_cycle_hotbar(1)
+			get_viewport().set_input_as_handled()
+			return
+	if event is InputEventKey and event.pressed and not event.echo:
+		var key := event as InputEventKey
+		var slot_i: int = key.physical_keycode - KEY_1
+		if slot_i >= 0 and slot_i <= 5:
+			_equip_hotbar(slot_i)
+			get_viewport().set_input_as_handled()
+			return
 	if event.is_action_pressed("toggle_inventory"):
-		if storage_ui != null and storage_ui.is_open:
-			storage_ui.close()
+		if inventory_ui.is_storage_open:
+			inventory_ui.close_storage()
 			get_viewport().set_input_as_handled()
 			return
 		_toggle_inventory()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("interact"):
-		if storage_ui != null and storage_ui.is_open:
-			storage_ui.close()
+		if inventory_ui.is_storage_open:
+			inventory_ui.close_storage()
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 			_update_crosshair()
 			get_viewport().set_input_as_handled()
@@ -137,6 +160,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			_begin_sit()
 			get_viewport().set_input_as_handled()
 			return
+		if not inventory_ui.is_open and _aimed_kind == &"door":
+			_toggle_aimed_door()
+			get_viewport().set_input_as_handled()
+			return
+		if not inventory_ui.is_open and _aimed_kind == &"lid":
+			_toggle_aimed_lid()
+			get_viewport().set_input_as_handled()
+			return
 		if not inventory_ui.is_open and _aimed_interactable and _open_storage(_aimed_storage_id):
 			get_viewport().set_input_as_handled()
 		return
@@ -150,6 +181,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		):
 			camera_pivot.rotate_y(-event.relative.x * mouse_sensitivity)
 			_pitch -= event.relative.y * mouse_sensitivity
+			_clamp_sit_look_yaw()
 			_apply_pitch()
 		if event.is_action_pressed("jump"):
 			if _sit_phase == SitPhase.SEATED:
@@ -168,8 +200,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_pitch -= event.relative.y * mouse_sensitivity
 		_apply_pitch()
 	if event.is_action_pressed("ui_cancel"):
-		if storage_ui != null and storage_ui.is_open:
-			storage_ui.close()
+		if inventory_ui.is_storage_open:
+			inventory_ui.close_storage()
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 			_update_crosshair()
 			get_viewport().set_input_as_handled()
@@ -231,6 +263,7 @@ func _process(delta: float) -> void:
 	_update_crosshair()
 	if not inventory_ui.is_open:
 		_ensure_yaw_only_on_camera_pivot()
+		_clamp_sit_look_yaw()
 		_apply_pitch()
 		if _sit_phase == SitPhase.APPROACHING:
 			_apply_body_look_yaw(_sit_yaw)
@@ -297,8 +330,6 @@ func _wish_from_input(input_dir: Vector2, sprinting: bool) -> Vector3:
 
 
 func _is_locked() -> bool:
-	if storage_ui != null and storage_ui.is_open:
-		return true
 	return inventory_ui.is_open
 
 
@@ -311,7 +342,7 @@ func _interact_raycast() -> Dictionary:
 	var origin := camera.global_position
 	var dir := (-camera.global_transform.basis.z).normalized()
 
-	# Ближайший треугольник видимого меша, не AABB-зона (шкаф больше не «перекрывает» микроволновку).
+	# Closest visible triangle within range, blocked by walls.
 	var best_d := interact_range
 	var best: Dictionary = {}
 	for node: Node in get_tree().get_nodes_in_group(&"interactable_mesh"):
@@ -322,18 +353,20 @@ func _interact_raycast() -> Dictionary:
 		if kind == StringName():
 			continue
 		var hit: Dictionary = _closest_triangle_hit(mi, origin, dir, best_d)
-		if bool(hit.get("ok", false)) and float(hit.dist) < best_d:
-			best_d = float(hit.dist)
-			best = {
-				"kind": kind,
-				"id": mi.get_meta(&"storage_id", StringName()) as StringName,
-				"mesh": mi,
-				"point": hit.point as Vector3,
-			}
-	if best.is_empty():
-		return {}
-	if not _has_clear_los_to(origin, best.point as Vector3, w):
-		return {}
+		if not bool(hit.get("ok", false)):
+			continue
+		var dist := float(hit.dist)
+		if dist >= best_d:
+			continue
+		if not _has_clear_los_to(origin, hit.point as Vector3, w):
+			continue
+		best_d = dist
+		best = {
+			"kind": kind,
+			"id": mi.get_meta(&"storage_id", StringName()) as StringName,
+			"mesh": mi,
+			"point": hit.point as Vector3,
+		}
 	return best
 
 
@@ -357,22 +390,19 @@ func _closest_triangle_hit(mi: MeshInstance3D, origin: Vector3, dir: Vector3, ma
 		mi.set_meta(&"interact_faces", faces)
 	if faces.size() < 3:
 		return {"ok": false}
+	# FBX doors have non-uniform parent scale (~50/100). Local-space rays miss;
+	# test triangles in world space.
 	var xf := mi.global_transform
-	var inv := xf.affine_inverse()
-	var local_o: Vector3 = inv * origin
-	var local_d: Vector3 = inv.basis * dir
-	if local_d.length_squared() < 1e-12:
-		return {"ok": false}
 	var best_world := max_d
 	var best_pt := Vector3.ZERO
 	var ok := false
 	var i := 0
 	while i + 2 < faces.size():
 		var p: Variant = Geometry3D.ray_intersects_triangle(
-			local_o, local_d, faces[i], faces[i + 1], faces[i + 2]
+			origin, dir, xf * faces[i], xf * faces[i + 1], xf * faces[i + 2]
 		)
 		if p != null:
-			var world_p: Vector3 = xf * (p as Vector3)
+			var world_p := p as Vector3
 			var d: float = origin.distance_to(world_p)
 			if d > 0.002 and d < best_world:
 				best_world = d
@@ -384,7 +414,9 @@ func _closest_triangle_hit(mi: MeshInstance3D, origin: Vector3, dir: Vector3, ma
 	return {"ok": true, "dist": best_world, "point": best_pt}
 
 
-func _has_clear_los_to(origin: Vector3, aim: Vector3, w: World3D) -> bool:
+func _has_clear_los_to(
+	origin: Vector3, aim: Vector3, w: World3D, extra_exclude: Array[RID] = []
+) -> bool:
 	var dist: float = origin.distance_to(aim)
 	if dist < 0.02:
 		return true
@@ -392,49 +424,71 @@ func _has_clear_los_to(origin: Vector3, aim: Vector3, w: World3D) -> bool:
 	q_wall.collide_with_areas = false
 	q_wall.collide_with_bodies = true
 	q_wall.collision_mask = WORLD_BLOCKING_MASK
-	q_wall.hit_from_inside = true
-	q_wall.exclude = _ray_exclude_rids()
+	q_wall.hit_from_inside = false
+	var ex: Array[RID] = _ray_exclude_rids()
+	ex.append_array(extra_exclude)
+	q_wall.exclude = ex
 	var hit_w: Dictionary = w.direct_space_state.intersect_ray(q_wall)
 	if hit_w.is_empty():
 		return true
-	# Склеенная коллизия карты включает те же меши — попадание почти в ту же точку не стена.
+	# Merged map collision includes the aimed mesh — a hit at the aim point is not a wall.
 	var dist_wall: float = origin.distance_to(hit_w.position)
-	return dist_wall >= dist - 0.2
+	return dist_wall >= dist - 0.08
 
 
 func _ray_exclude_rids() -> Array[RID]:
-	# exclude ожидает RID физического тела CharacterBody3D
+	# exclude expects the CharacterBody3D physics RID
 	return [get_rid()] as Array[RID]
 
 
+func _toggle_aimed_door() -> void:
+	if _aimed_door == null:
+		return
+	var ctrl: Node = get_tree().get_first_node_in_group(&"hub_swing_doors")
+	if ctrl != null and ctrl.has_method("toggle"):
+		ctrl.call("toggle", _aimed_door)
+
+
+func _toggle_aimed_lid() -> void:
+	if _aimed_lid == null:
+		return
+	var ctrl: Node = get_tree().get_first_node_in_group(&"hub_lids")
+	if ctrl != null and ctrl.has_method("toggle"):
+		ctrl.call("toggle", _aimed_lid)
+
+
 func _open_storage(sid: StringName) -> bool:
-	if sid == StringName() or storage_ui == null:
+	if sid == StringName() or inventory_ui == null:
 		return false
 	if inventory_ui.is_open:
 		return false
 	var loadout: PlayerLoadout = KitchenStorages.loadout(sid)
 	if loadout == null:
 		return false
-	storage_ui.open_with(loadout, KitchenStorages.interact_label(sid))
+	inventory_ui.open_storage(loadout, KitchenStorages.interact_label(sid), sid)
 	_open_storage_id = sid
+	_open_storage_mesh = _aimed_storage_mesh
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	_update_crosshair()
 	_start_rummage()
-	if sid == KitchenStorages.ID_FRIDGE:
-		_set_fridge_open(true)
+	_set_appliance_open(sid, true)
 	return true
 
 
 func _update_interact_aim() -> void:
 	_aimed_interactable = false
 	_aimed_storage_id = StringName()
+	_aimed_storage_mesh = null
 	_aimed_kind = StringName()
 	_aimed_seat = null
+	_aimed_hit_point = Vector3.ZERO
+	_aimed_door = null
+	_aimed_lid = null
 	if interact_hint != null:
 		interact_hint.set_hint("")
 	if _sit_phase == SitPhase.SEATED:
 		if interact_hint != null:
-			interact_hint.set_hint("Встать [E]")
+			interact_hint.set_hint("Stand [E]")
 		return
 	if _sit_phase != SitPhase.NONE:
 		return
@@ -448,10 +502,38 @@ func _update_interact_aim() -> void:
 	var kind: StringName = hit.kind as StringName
 	if kind == &"sit":
 		_aimed_kind = &"sit"
-		_aimed_seat = hit.mesh as MeshInstance3D
+		var seat := hit.mesh as MeshInstance3D
+		if seat != null and seat.has_meta(&"sit_seat"):
+			seat = seat.get_meta(&"sit_seat") as MeshInstance3D
+		_aimed_seat = seat
+		_aimed_hit_point = hit.point as Vector3
 		_aimed_interactable = true
 		if interact_hint != null:
-			interact_hint.set_hint("Диван [E]")
+			interact_hint.set_hint("Sit [E]")
+		return
+	if kind == &"door":
+		_aimed_kind = &"door"
+		var door_mesh := hit.mesh as MeshInstance3D
+		if door_mesh != null and door_mesh.has_meta(&"door_leaf"):
+			_aimed_door = door_mesh.get_meta(&"door_leaf") as MeshInstance3D
+		else:
+			_aimed_door = door_mesh
+		_aimed_interactable = true
+		if interact_hint != null:
+			var closed := _aimed_door != null and bool(_aimed_door.get_meta(&"door_closed", false))
+			interact_hint.set_hint("Open [E]" if closed else "Close [E]")
+		return
+	if kind == &"lid":
+		_aimed_kind = &"lid"
+		var lid_mesh := hit.mesh as MeshInstance3D
+		if lid_mesh != null and lid_mesh.has_meta(&"lid_leaf"):
+			_aimed_lid = lid_mesh.get_meta(&"lid_leaf") as MeshInstance3D
+		else:
+			_aimed_lid = lid_mesh
+		_aimed_interactable = true
+		if interact_hint != null:
+			var lid_closed := _aimed_lid != null and bool(_aimed_lid.get_meta(&"lid_closed", true))
+			interact_hint.set_hint("Open [E]" if lid_closed else "Close [E]")
 		return
 	var sid: StringName = hit.id as StringName
 	var loadout: PlayerLoadout = KitchenStorages.loadout(sid)
@@ -460,6 +542,7 @@ func _update_interact_aim() -> void:
 	_aimed_kind = &"storage"
 	_aimed_interactable = true
 	_aimed_storage_id = sid
+	_aimed_storage_mesh = hit.mesh as MeshInstance3D
 	if interact_hint != null:
 		var name_part := KitchenStorages.interact_label(sid)
 		interact_hint.set_hint("%s [E]" % name_part)
@@ -645,9 +728,38 @@ func _seat_anchor(mi: MeshInstance3D, facing: Vector3, gap: float) -> Vector3:
 	if mesh == null:
 		return global_position
 	var aabb: AABB = mi.global_transform * mesh.get_aabb()
-	var center: Vector3 = aabb.get_center()
+	var center := _sit_slot_center(mi, aabb)
 	var half := minf(aabb.size.x, aabb.size.z) * 0.5
 	return Vector3(center.x, global_position.y, center.z) + facing * (half + gap)
+
+
+func _sit_slot_center(mi: MeshInstance3D, aabb: AABB) -> Vector3:
+	var places := int(mi.get_meta(&"sit_places", 1))
+	if places < 2:
+		return aabb.get_center()
+	var along_z := aabb.size.z >= aabb.size.x
+	var hint := _aimed_hit_point
+	if hint == Vector3.ZERO:
+		hint = global_position
+	var best_i := 0
+	var best_d := INF
+	for i in places:
+		var c := _slot_center(aabb, along_z, i, places)
+		var d := Vector2(c.x - hint.x, c.z - hint.z).length_squared()
+		if d < best_d:
+			best_d = d
+			best_i = i
+	return _slot_center(aabb, along_z, best_i, places)
+
+
+func _slot_center(aabb: AABB, along_z: bool, i: int, n: int) -> Vector3:
+	var t := (float(i) + 0.5) / float(n)
+	var c := aabb.get_center()
+	if along_z:
+		c.z = aabb.position.z + aabb.size.z * t
+	else:
+		c.x = aabb.position.x + aabb.size.x * t
+	return c
 
 
 func _toggle_stance() -> void:
@@ -761,6 +873,22 @@ func _apply_horizontal_movement(
 	velocity.z = horizontal.z
 
 
+func _equip_hotbar(slot_i: int) -> void:
+	var loadout: PlayerLoadout = player_inventory.loadout
+	if loadout == null:
+		return
+	if slot_i < 0 or slot_i > 5:
+		return
+	loadout.set_held_pocket(slot_i)
+
+
+func _cycle_hotbar(delta: int) -> void:
+	var loadout: PlayerLoadout = player_inventory.loadout
+	if loadout == null:
+		return
+	loadout.set_held_pocket(posmod(loadout.held_pocket + delta, InventoryLayout.POCKET_COUNT))
+
+
 func _toggle_inventory() -> void:
 	inventory_ui.toggle()
 	if inventory_ui.is_open:
@@ -783,9 +911,9 @@ func _on_storage_closed() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	_update_crosshair()
 	_stop_rummage()
-	if _open_storage_id == KitchenStorages.ID_FRIDGE:
-		_set_fridge_open(false)
+	_set_appliance_open(_open_storage_id, false)
 	_open_storage_id = StringName()
+	_open_storage_mesh = null
 
 
 func _start_rummage() -> void:
@@ -805,16 +933,17 @@ func _stop_rummage() -> void:
 		fps_man.call("release_action")
 
 
-func _set_fridge_open(want: bool) -> void:
-	var n := get_tree().get_first_node_in_group(&"fridge_door_ctrl")
-	if n != null and n.has_method("set_open"):
-		n.call("set_open", want)
+func _set_appliance_open(sid: StringName, want: bool) -> void:
+	var mesh := _open_storage_mesh
+	for n: Node in get_tree().get_nodes_in_group(&"hub_storage_anim"):
+		if n.has_method("set_open"):
+			n.call("set_open", sid, want, mesh)
 
 
 func _update_crosshair() -> void:
 	if crosshair == null:
 		return
-	var ui_open := inventory_ui.is_open or (storage_ui != null and storage_ui.is_open)
+	var ui_open := inventory_ui.is_open
 	var should_show: bool = not ui_open and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
 	crosshair.visible = should_show
 
@@ -833,3 +962,16 @@ func _apply_pitch() -> void:
 	if _enforce_pitch_limit:
 		_pitch = clamp(_pitch, -_pitch_limit_rad(), _pitch_limit_rad())
 	camera.rotation.x = _pitch
+
+
+func _clamp_sit_look_yaw() -> void:
+	if (
+		_sit_phase != SitPhase.ENTERING
+		and _sit_phase != SitPhase.SEATED
+		and _sit_phase != SitPhase.EXITING
+	):
+		return
+	var base := _yaw_from_dir(_sit_facing)
+	var limit := deg_to_rad(sit_yaw_limit_deg)
+	var offset := angle_difference(base, camera_pivot.rotation.y)
+	camera_pivot.rotation.y = base + clampf(offset, -limit, limit)

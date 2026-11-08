@@ -1,11 +1,11 @@
-[gd_resource type="Resource" script_class="ItemDefinition" load_steps=2 format=3]
+[gd_resource type="Resource" script_class="ItemDefinition" format=3 uid="uid://cubi3d77lqyfc"]
 
-[ext_resource type="Script" path="res://scripts/inventory/item_definition.gd" id="1"]
+[ext_resource type="Script" uid="uid://ccxr5hwn1jlo6" path="res://scripts/inventory/item_definition.gd" id="1"]
 
 [resource]
 script = ExtResource("1")
 id = &"canned_food"
-display_name = "Консерва"
+display_name = "Canned Food"
 weight_kg = 0.8
 max_stack = 5
 category = 4

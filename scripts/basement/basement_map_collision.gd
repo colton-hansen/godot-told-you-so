@@ -69,19 +69,56 @@ func _build_merged_mesh(sketch: Node3D) -> ArrayMesh:
 
 
 func _append_surfaces_recursive(node: Node, inv_sketch: Transform3D, st: SurfaceTool) -> bool:
+	# Skinned preview characters in the FBX cannot be merged (bones/weights).
+	if node is Skeleton3D:
+		return false
 	var any := false
 	if node is MeshInstance3D:
 		var mi := node as MeshInstance3D
-		var mesh: Mesh = mi.mesh
-		var am := mesh as ArrayMesh
-		if am != null:
-			var xf: Transform3D = inv_sketch * mi.global_transform
-			for si: int in range(am.get_surface_count()):
-				st.append_from(am, si, xf)
-				any = true
+		if (
+			mi.skin == null
+			and not _is_swing_door_or_frame(mi)
+			and not _is_fridge_door_mesh(mi)
+			and not _is_drawer_mesh(mi)
+			and not _is_lid_mesh(mi)
+		):
+			var mesh: Mesh = mi.mesh
+			var am := mesh as ArrayMesh
+			if am != null:
+				var xf: Transform3D = inv_sketch * mi.global_transform
+				for si: int in range(am.get_surface_count()):
+					st.append_from(am, si, xf)
+					any = true
 	for c: Node in node.get_children():
 		any = _append_surfaces_recursive(c, inv_sketch, st) or any
 	return any
+
+
+func _is_swing_door_or_frame(mi: MeshInstance3D) -> bool:
+	var n := String(mi.name).to_lower()
+	if n.begins_with("frame") or n.begins_with("door-frame"):
+		return true
+	if not n.begins_with("door"):
+		return false
+	var p := mi.get_parent()
+	if p == null:
+		return false
+	var pn := String(p.name).to_lower()
+	return pn.begins_with("frame") or pn.begins_with("door-frame")
+
+
+func _is_fridge_door_mesh(mi: MeshInstance3D) -> bool:
+	var n := String(mi.name).to_lower()
+	return n.begins_with("fridge-door") or n == "drink-fridge-door" or n == "microwave-door"
+
+
+func _is_drawer_mesh(mi: MeshInstance3D) -> bool:
+	return String(mi.name).to_lower().begins_with("drawer")
+
+
+func _is_lid_mesh(mi: MeshInstance3D) -> bool:
+	var n := String(mi.name).to_lower()
+	return n == "oven-door" or n == "toilet-top" or n == "washing-maschine-top"
 
 
 func _add_safety_floor(sketch: Node3D, merged: ArrayMesh) -> void:

@@ -1,4 +1,4 @@
-﻿# Kitchen / floor textures — painted materials, not noise.
+# Kitchen / floor textures — painted materials, not noise.
 # 2012 prepared basement: cheap alder laminate, linoleum, кафель, painted cinder block.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -343,6 +343,49 @@ public static class KitchenTex {
         }
         SavePng(buf, stride, w, h, path);
     }
+
+    // PSX vinyl tile 16² — not a flat fill. Grout on +X/+Y so a chessboard still reads.
+    public static void FloorCheckTile16(string path, bool dark) {
+        int w = 16, h = 16, stride;
+        byte[] buf = NewBuf(w, h, out stride);
+        int br, bg, bb;
+        if (dark) { br = 42; bg = 38; bb = 36; }
+        else { br = 248; bg = 248; bb = 246; }
+        int grout = 1;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int r = br, g = bg, b = bb;
+                if (x < grout || y < grout) {
+                    int d = (int)(H01(x, y, 3) * 10);
+                    if (dark) SetRgb(buf, stride, w, h, x, y, 22 + d, 20 + d, 18 + d);
+                    else SetRgb(buf, stride, w, h, x, y, 198 + d, 198 + d, 196 + d);
+                    continue;
+                }
+                double n = H01(x, y, 11);
+                int v = (int)((n - 0.5) * (dark ? 22 : 8));
+                r += v; g += v * 3 / 4; b += v / 2;
+                if (H01(x, y, 28) > 0.92) {
+                    if (dark) { r += 18; g += 14; b += 10; }
+                    else { r -= 8; g -= 8; b -= 6; }
+                }
+                if (H01(x, y, 41) < 0.06) {
+                    if (dark) { r += 8; g += 6; b += 4; }
+                    else { r += 14; g += 12; b += 8; }
+                }
+                if (x == grout || y == grout) { r += dark ? 10 : 16; g += dark ? 8 : 12; b += 6; }
+                if (x == w - 1 || y == h - 1) { r -= dark ? 8 : 14; g -= dark ? 6 : 12; b -= 8; }
+                SetRgb(buf, stride, w, h, x, y, r, g, b);
+            }
+        }
+        if (dark) {
+            Blob(buf, stride, w, h, 5, 11, 3, 14, 10, 6);
+            Blob(buf, stride, w, h, 12, 4, 2, 10, 8, 5);
+        } else {
+            Blob(buf, stride, w, h, 4, 10, 3, -8, -8, -6);
+            Blob(buf, stride, w, h, 11, 5, 2, -6, -6, -4);
+        }
+        SavePng(buf, stride, w, h, path);
+    }
 }
 '@
 
@@ -357,5 +400,7 @@ $outDir = Join-Path $root "assets\textures\kitchen_procedural"
 [KitchenTex]::CounterLaminate256((Join-Path $outDir "countertop_speckle_256.png"))
 [KitchenTex]::MetalBrushed256((Join-Path $outDir "appliance_metal_smudge_256.png"))
 [KitchenTex]::WallCinder256((Join-Path $outDir "wall_paint_basement_256.png"))
+[KitchenTex]::FloorCheckTile16((Join-Path $outDir "floor_check_white_16.png"), $false)
+[KitchenTex]::FloorCheckTile16((Join-Path $outDir "floor_check_black_16.png"), $true)
 
 Write-Host "Wrote 2012 basement textures to $outDir"

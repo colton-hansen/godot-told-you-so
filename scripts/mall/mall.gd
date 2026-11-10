@@ -31,10 +31,12 @@ var _footprints: Array[Rect2] = [
 	Rect2(-6, -11, 12, 11), # First room
 ]
 
-var _plaster := _material(Color("#68695c"))
-var _skirt := _material(Color("#38534e"))
-var _floor := _material(Color("#5b554b"))
-var _dark_tile := _material(Color("#414943"))
+var _plaster := _market_finish(preload("res://assets/models/mall/market/market_Aged plaster.png"))
+var _ceramic := _market_finish(preload("res://assets/models/mall/market/market_Nicotine ivory ceramic.png"))
+var _skirt := _market_finish(preload("res://assets/models/mall/market/market_Oxidized supermarket teal.png"))
+var _baseboard := _market_finish(preload("res://assets/models/mall/market/market_Charcoal rubber.png"))
+var _floor := _market_finish(preload("res://assets/models/mall/market/market_Terrazzo 00.png"))
+var _dark_tile := _market_finish(preload("res://assets/models/mall/market/market_Terrazzo 03.png"))
 var _metal := _material(Color("#36413c"))
 var _warning := _material(Color("#917142"))
 var _diffuser := _material(Color("#c6ccad"))
@@ -275,7 +277,8 @@ func _room(title: String, center: Vector3, size: Vector2, doors: Dictionary) -> 
 		if side.x != 0:
 			edge.rotation.y = -PI / 2
 		room.add_child(edge)
-		var half := (size.y if side.x != 0 else size.x) / 2.0
+		# Side walls end against the front and rear walls instead of overlapping them.
+		var half := size.y / 2.0 - WALL if side.x != 0 else size.x / 2.0
 		var door: Vector2 = doors.get(side, Vector2.ZERO)
 		if door.y == 0.0:
 			_wall_strip(edge, -half, half)
@@ -290,16 +293,22 @@ func _room(title: String, center: Vector3, size: Vector2, doors: Dictionary) -> 
 func _wall_strip(edge: Node3D, from: float, to: float) -> void:
 	var center := (from + to) / 2.0
 	var width := to - from
-	_block(edge, "Wall", Vector3(center, HEIGHT / 2, 0),
-		Vector3(width, HEIGHT, WALL), _plaster)
-	_block(edge, "Enamel band", Vector3(center, 0.53, 0),
-		Vector3(width, 0.91, WALL + 0.014), _skirt, false)
+	_block(edge, "Rubber baseboard", Vector3(center, 0.08, 0),
+		Vector3(width, 0.16, WALL), _baseboard)
+	_block(edge, "Enamel band", Vector3(center, 0.58, 0),
+		Vector3(width, 0.84, WALL), _skirt)
+	_block(edge, "Ceramic band", Vector3(center, 1.875, 0),
+		Vector3(width, 1.75, WALL), _ceramic)
+	var upper_band := HEIGHT - 2.75
+	_block(edge, "Plaster band", Vector3(center, HEIGHT - upper_band / 2, 0),
+		Vector3(width, upper_band, WALL), _plaster)
 
 
 func _build_service(room: Node3D, rng: RandomNumberGenerator) -> void:
 	var partition_z := rng.randf_range(-0.55, 0.55)
 	# Two separate doors between the receiving and dispatch areas.
-	for span: Vector2 in [Vector2(-6, -4.6), Vector2(-2.5, 2.5), Vector2(4.6, 6)]:
+	for span: Vector2 in [Vector2(-6 + WALL, -4.6), Vector2(-2.5, 2.5),
+			Vector2(4.6, 6 - WALL)]:
 		var wall := Node3D.new()
 		wall.position.z = partition_z
 		room.add_child(wall)
@@ -390,6 +399,16 @@ func _light_template(room: Node3D) -> void:
 		&"Stockroom":
 			for x: float in [-1.45, 1.45]:
 				_light(room, Vector3(x, 2.9, -0.1), Color("#c2d6b5"), 1.25, 5.8)
+
+
+func _market_finish(texture: Texture2D) -> StandardMaterial3D:
+	var surface := StandardMaterial3D.new()
+	surface.albedo_texture = texture
+	surface.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
+	surface.uv1_triplanar = true
+	surface.uv1_world_triplanar = true
+	surface.uv1_triplanar_sharpness = 8.0
+	return surface
 
 
 func _material(color: Color) -> StandardMaterial3D:

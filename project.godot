@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 KitchenStorages="*res://scripts/autoload/kitchen_storages.gd"
+RunState="*res://scripts/autoload/run_state.gd"
 
 [display]
 
@@ -27,13 +28,13 @@ window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
-[gui]
-
-theme/custom_font="res://assets/fonts/GeistPixel.ttf"
-
 [filesystem]
 
 import/blender/enabled=false
+
+[gui]
+
+theme/custom_font="res://assets/fonts/GeistPixel.ttf"
 
 [input]
 

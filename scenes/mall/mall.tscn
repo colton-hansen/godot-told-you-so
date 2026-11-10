@@ -1,0 +1,30 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/mall/mall.gd" id="1_mall"]
+[ext_resource type="Script" path="res://scripts/mall/mall_travel.gd" id="2_travel"]
+
+[sub_resource type="Environment" id="Environment_mall"]
+background_mode = 1
+background_color = Color(0.03, 0.037, 0.034, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.62, 0.68, 0.62, 1)
+ambient_light_energy = 0.42
+reflected_light_source = 2
+
+[node name="Mall" type="Node3D"]
+script = ExtResource("1_mall")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_mall")
+
+[node name="Travel" type="CanvasLayer" parent="."]
+script = ExtResource("2_travel")
+
+[node name="TravelHint" type="Label" parent="Travel"]
+offset_left = 18.0
+offset_top = 78.0
+mouse_filter = 2
+theme_override_colors/font_shadow_color = Color(0, 0, 0, 1)
+theme_override_constants/shadow_offset_x = 1
+theme_override_constants/shadow_offset_y = 2
+text = "M   /   DEBUG EVAC     R   /   DEBUG REGENERATE"

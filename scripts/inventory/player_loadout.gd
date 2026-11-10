@@ -2,6 +2,7 @@ class_name PlayerLoadout
 extends RefCounted
 
 signal changed
+signal item_used(definition: ItemDefinition)
 
 enum Area { ACTIVE, POCKET, BACKPACK }
 
@@ -149,6 +150,7 @@ func use_from_slot(area: Area, index: int) -> bool:
 		return false
 	if not s.definition.is_usable():
 		return false
+	var used := s.definition
 	s.quantity -= 1
 	if s.quantity <= 0:
 		if is_favorite(area, index):
@@ -156,6 +158,7 @@ func use_from_slot(area: Area, index: int) -> bool:
 		s.definition = null
 		s.quantity = 0
 	emit_changed()
+	item_used.emit(used)
 	return true
 
 

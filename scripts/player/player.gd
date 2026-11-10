@@ -89,6 +89,9 @@ var _open_storage_mesh: MeshInstance3D = null
 var _rummaging: bool = false
 
 
+var _run_target: RunInteraction
+
+
 func _ready() -> void:
 	add_to_group(&"player")
 	_pitch = camera.rotation.x
@@ -98,22 +101,12 @@ func _ready() -> void:
 	inventory_ui.closed.connect(_on_inventory_closed)
 	inventory_ui.opened.connect(_on_inventory_opened)
 	inventory_ui.storage_closed.connect(_on_storage_closed)
-	_seed_test_items()
 	_prepare_body_shape()
 	_apply_body_height()
 	if fps_man != null and fps_man.has_signal(&"action_finished"):
 		fps_man.action_finished.connect(_on_man_action_finished)
 	set_physics_process(true)
 	set_process(true)
-
-
-func _seed_test_items() -> void:
-	var can := preload("res://resources/items/canned_food.tres") as ItemDefinition
-	var bandage := preload("res://resources/items/bandage.tres") as ItemDefinition
-	var water := preload("res://resources/items/water_bottle.tres") as ItemDefinition
-	player_inventory.loadout.try_add_item(can, 2)
-	player_inventory.loadout.try_add_item(bandage, 1)
-	player_inventory.loadout.try_add_item(water, 1)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -155,6 +148,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _sit_phase == SitPhase.SEATED:
 			_begin_stand_from_sit()
 			get_viewport().set_input_as_handled()
+			return
+		if not inventory_ui.is_open and is_instance_valid(_run_target) and _run_target.enabled():
+			get_viewport().set_input_as_handled()
+			_run_target.action.call()
 			return
 		if not inventory_ui.is_open and _aimed_kind == &"sit":
 			_begin_sit()
@@ -476,6 +473,7 @@ func _open_storage(sid: StringName) -> bool:
 
 
 func _update_interact_aim() -> void:
+	_run_target = null
 	_aimed_interactable = false
 	_aimed_storage_id = StringName()
 	_aimed_storage_mesh = null
@@ -495,6 +493,21 @@ func _update_interact_aim() -> void:
 	if _is_locked() or camera == null:
 		return
 	if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
+		return
+	var best := interact_range
+	for node in get_tree().get_nodes_in_group(&"run_interaction"):
+		var target := node as RunInteraction
+		var distance := camera.global_position.distance_to(target.global_position)
+		if distance >= best or not target.enabled():
+			continue
+		var query := PhysicsRayQueryParameters3D.create(camera.global_position, target.global_position,
+			WORLD_BLOCKING_MASK, [get_rid()])
+		if not get_world_3d().direct_space_state.intersect_ray(query).is_empty():
+			continue
+		_run_target = target
+		best = distance
+	if _run_target != null:
+		interact_hint.set_hint(_run_target.prompt + " [E]")
 		return
 	var hit := _interact_raycast()
 	if hit.is_empty():

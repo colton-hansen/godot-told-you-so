@@ -17,6 +17,11 @@ var _by_id: Dictionary = {}
 
 
 func _ready() -> void:
+	reset()
+
+
+func reset() -> void:
+	_by_id.clear()
 	_register(ID_FRIDGE)
 	_register(ID_FREEZER)
 	_register(ID_DRINK_FRIDGE)

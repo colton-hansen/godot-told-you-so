@@ -1,6 +1,6 @@
 [gd_scene load_steps=2 format=3 uid="uid://tys_player_man_rig"]
 
-[ext_resource type="PackedScene" path="res://assets/player/man.fbx" id="1_man"]
+[ext_resource type="PackedScene" path="res://assets/characters/player/player-model-1.glb" id="1_man"]
 
 [node name="PlayerManRig" type="Node3D"]
 

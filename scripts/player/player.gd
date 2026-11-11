@@ -53,6 +53,8 @@ enum SitPhase { NONE, APPROACHING, ENTERING, SEATED, EXITING }
 @onready var interact_hint: InteractHint = $InteractHint
 @onready var _collision: CollisionShape3D = $CollisionShape3D
 
+var third_person: bool = false
+
 var _pitch: float = 0.0
 var _enforce_pitch_limit: bool = true
 var is_sprinting: bool = false
@@ -110,6 +112,11 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_V and not _is_locked():
+		third_person = not third_person
+		fps_man.hide_head_from_player_camera = not third_person
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.pressed and not _is_locked():
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
@@ -269,6 +276,17 @@ func _process(delta: float) -> void:
 func _update_camera_rig(delta: float) -> void:
 	if inventory_ui != null and inventory_ui.is_open:
 		return
+	if third_person:
+		camera_pivot.position = Vector3(0, lerpf(1.55, 1.0, _crouch), 0)
+		var shoulder := Vector3(0.55, 0.10, 2.1)
+		var origin := camera_pivot.global_position
+		var desired := camera_pivot.to_global(camera.basis * shoulder)
+		var query := PhysicsRayQueryParameters3D.create(origin, desired, WORLD_BLOCKING_MASK, [get_rid()])
+		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		if not hit.is_empty():
+			desired = hit.position + hit.normal * 0.18
+		camera.global_position = desired
+		return
 	var sprint_cam: bool = is_sprinting
 	var target_forward: float = (
 		camera_forward_sprint if sprint_cam else camera_forward_idle
@@ -340,7 +358,7 @@ func _interact_raycast() -> Dictionary:
 	var dir := (-camera.global_transform.basis.z).normalized()
 
 	# Closest visible triangle within range, blocked by walls.
-	var best_d := interact_range
+	var best_d := interact_range + (2.2 if third_person else 0.0)
 	var best: Dictionary = {}
 	for node: Node in get_tree().get_nodes_in_group(&"interactable_mesh"):
 		var mi := node as MeshInstance3D
@@ -353,7 +371,7 @@ func _interact_raycast() -> Dictionary:
 		if not bool(hit.get("ok", false)):
 			continue
 		var dist := float(hit.dist)
-		if dist >= best_d:
+		if dist >= best_d or global_position.distance_to(hit.point) > interact_range + 0.8:
 			continue
 		if not _has_clear_los_to(origin, hit.point as Vector3, w):
 			continue
@@ -497,7 +515,7 @@ func _update_interact_aim() -> void:
 	var best := interact_range
 	for node in get_tree().get_nodes_in_group(&"run_interaction"):
 		var target := node as RunInteraction
-		var distance := camera.global_position.distance_to(target.global_position)
+		var distance := (global_position + Vector3.UP).distance_to(target.global_position)
 		if distance >= best or not target.enabled():
 			continue
 		var query := PhysicsRayQueryParameters3D.create(camera.global_position, target.global_position,

@@ -20,7 +20,10 @@ var _route_timer := 0.0
 var _search_timer := 0.0
 var _last_seen := Vector3.ZERO
 var _audio: AudioStreamPlayer3D
-var _beacon: MeshInstance3D
+var _anim: AnimationPlayer
+var _attack_time := -1.0
+var _attack_hit := false
+const Motion = preload("res://scripts/player/player_locomotion_anim.gd")
 
 
 func _ready() -> void:
@@ -29,16 +32,19 @@ func _ready() -> void:
 	floor_snap_length = 0.18
 	var shape := CapsuleShape3D.new()
 	shape.radius = 0.23
-	shape.height = 1.14
+	shape.height = 1.8
 	var collider := CollisionShape3D.new()
 	collider.shape = shape
-	collider.position.y = 0.57
+	collider.position.y = 0.9
 	add_child(collider)
-	_visual(Vector3(0, 0.45, 0), Vector3(0.49, 0.58, 0.45), Color("#626c61"))
-	_visual(Vector3(0, 0.89, 0), Vector3(0.40, 0.29, 0.36), Color("#282b28"))
-	for side: float in [-1.0, 1.0]:
-		_visual(Vector3(side * 0.23, 0.15, 0), Vector3(0.13, 0.24, 0.46), Color("#1b211d"))
-	_beacon = _visual(Vector3(0, 0.89, -0.184), Vector3(0.24, 0.06, 0.024), Color("#e6a245"))
+	var variant := randi_range(1, 3)
+	var model := (load("res://assets/characters/sint-bot/sint-bot-model-%d.glb" % variant) as PackedScene).instantiate() as Node3D
+	add_child(model)
+	Motion.apply_body_material(model)
+	model.rotation.y = PI
+	_anim = model.find_child("AnimationPlayer", true, false) as AnimationPlayer
+	Motion.install_locomotion_library(_anim, {"idle": "idle", "walk": "walk", "run": "run", "overhead-punch": "overhead-punch"})
+	_anim.play("locomotion/idle")
 	_audio = AudioStreamPlayer3D.new()
 	_audio.stream = _motor_sound()
 	_audio.volume_db = -12
@@ -57,6 +63,20 @@ func _physics_process(delta: float) -> void:
 	if not is_instance_valid(player) or RunState.phase != RunState.Phase.RAID:
 		return
 
+	if _attack_time >= 0.0:
+		_attack_time += delta
+		velocity.x = 0.0
+		velocity.z = 0.0
+		velocity.y -= 18.0 * delta
+		move_and_slide()
+		var duration := _anim.get_animation("locomotion/overhead-punch").length
+		if not _attack_hit and _attack_time >= duration * 0.55:
+			_attack_hit = true
+			if global_position.distance_to(player.global_position) < 1.15 and _can_see():
+				RunState.caught()
+		if _attack_time >= duration:
+			_attack_time = -1.0
+		return
 	var sees := _can_see()
 	if sees:
 		_last_seen = player.global_position
@@ -64,7 +84,9 @@ func _physics_process(delta: float) -> void:
 			_route_timer = 0
 		state = State.CHASE
 		if global_position.distance_to(player.global_position) < 0.83:
-			RunState.caught()
+			_attack_time = 0.0
+			_attack_hit = false
+			_anim.play("locomotion/overhead-punch", 0.1)
 			return
 	elif state == State.CHASE:
 		state = State.SEARCH
@@ -87,7 +109,7 @@ func _build_navigation() -> void:
 	var space := get_world_3d().direct_space_state
 	var probe := CapsuleShape3D.new()
 	probe.radius = 0.28
-	probe.height = 1.14
+	probe.height = 1.8
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = probe
 	query.collision_mask = MASK
@@ -99,7 +121,7 @@ func _build_navigation() -> void:
 				if _points.has(cell):
 					continue
 				var point := Vector3((x + 0.5) * CELL, 0, (z + 0.5) * CELL)
-				query.transform.origin = point + Vector3.UP * 0.64
+				query.transform.origin = point + Vector3.UP * 0.95
 				if not space.intersect_shape(query, 1).is_empty():
 					continue
 				var floor_query := PhysicsRayQueryParameters3D.create(
@@ -115,7 +137,7 @@ func _build_navigation() -> void:
 				continue
 			var from_id: int = _points[cell]
 			var to_id: int = _points[cell + offset]
-			query.transform.origin = _graph.get_point_position(from_id) + Vector3.UP * 0.64
+			query.transform.origin = _graph.get_point_position(from_id) + Vector3.UP * 0.95
 			query.motion = _graph.get_point_position(to_id) - _graph.get_point_position(from_id)
 			var sweep := space.cast_motion(query)
 			if sweep.size() == 2 and sweep[0] >= 0.999:
@@ -178,8 +200,10 @@ func _move(delta: float) -> void:
 	velocity.y -= 18.0 * delta
 	move_and_slide()
 	_audio.pitch_scale = 1.55 if state == State.CHASE else 1.0
-	var lens := _beacon.material_override as StandardMaterial3D
-	lens.emission = Color("#ff3724") if state == State.CHASE else Color("#f2ab46")
+	var clip := "idle" if direction == Vector3.ZERO else ("run" if state == State.CHASE else "walk")
+	var anim_id := "locomotion/" + clip
+	if _anim.current_animation != anim_id:
+		_anim.play(anim_id, 0.18)
 
 
 func _visual(point: Vector3, size: Vector3, color: Color) -> MeshInstance3D:

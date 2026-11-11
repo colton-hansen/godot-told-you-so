@@ -90,7 +90,7 @@ func _skeleton() -> Skeleton3D:
 
 
 func _find_camera_bone(sk: Skeleton3D) -> int:
-	for bone_name in [&"spine.005", &"spine.004", &"spine.003"]:
+	for bone_name in [&"Head", &"Neck"]:
 		var idx := sk.find_bone(bone_name)
 		if idx >= 0:
 			return idx
@@ -172,7 +172,7 @@ func _apply_mesh_layers(editor_mode: bool = false) -> void:
 	for node in _model_root.find_children("*", "MeshInstance3D", true, false):
 		var mi := node as MeshInstance3D
 		mi.visible = true
-		if StringName(mi.name) == &"head" and hide_head:
+		if hide_head:
 			mi.layers = HIDDEN_RENDER_LAYER
 		else:
 			mi.layers = WORLD_RENDER_LAYER

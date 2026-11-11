@@ -1,0 +1,28 @@
+[gd_scene format=3]
+
+[ext_resource type="PackedScene" path="res://assets/models/basement/basement_psx.glb" id="1_base"]
+[ext_resource type="PackedScene" path="res://scenes/player/player.tscn" id="2_player"]
+[ext_resource type="Script" path="res://scripts/basement/raid_hub.gd" id="3_hub"]
+[ext_resource type="Script" path="res://scripts/mall/mall_travel.gd" id="4_debug"]
+
+[sub_resource type="Environment" id="Environment_hub"]
+background_mode = 1
+background_color = Color(0.035, 0.035, 0.031, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.76, 0.72, 0.61, 1)
+ambient_light_energy = 0.52
+
+[node name="BasementHub" type="Node3D"]
+script = ExtResource("3_hub")
+
+[node name="Basement" parent="." instance=ExtResource("1_base")]
+
+[node name="Player" parent="." instance=ExtResource("2_player")]
+position = Vector3(-0.35, 0.13, -1.50)
+rotation = Vector3(0, 3.141593, 0)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_hub")
+
+[node name="DebugTravel" type="CanvasLayer" parent="."]
+script = ExtResource("4_debug")
